@@ -1,0 +1,16 @@
+{
+  "name": "starting-1k-bot-host",
+  "version": "1.0.0",
+  "description": "Starting 1k Aternos 24/7 Bot Manager",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "mineflayer": "^4.20.1",
+    "sqlite3": "^5.1.7"
+  }
+}
