@@ -1,10 +1,12 @@
 {
-  "name": "starting-1k-bot-host",
+  "name": "starting1k-bots",
   "version": "1.0.0",
-  "description": "Starting 1k Aternos 24/7 Bot Manager",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
