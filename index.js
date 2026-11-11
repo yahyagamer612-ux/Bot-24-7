@@ -118,7 +118,7 @@ function startBotProcess(botData) {
     const existing = activeBots[key];
     if (existing && (existing.instance || existing.reconnectTimer)) return;
 
-    const entry = existing || { logs: [], health: 0, food: 0 };
+    const entry = existing || { logs: [], health: 0, food: 0, safeMode: process.env.BOT_JUMP === 'false' };
     entry.manualStop = false;
     entry.status = 'Connecting';
     entry.info = botData;
@@ -142,7 +142,7 @@ function startBotProcess(botData) {
             port: port,
             username: botData.bot_name,
             auth: 'offline',
-            version: false,
+            version: process.env.BOT_VERSION || false,
             hideErrors: true
         });
     } catch (e) {
@@ -156,17 +156,25 @@ function startBotProcess(botData) {
 
     bot.on('login', () => addLog('تم تسجيل الدخول، جاري التحميل...'));
 
-    bot.on('spawn', () => {
+    bot.on('spawn', async () => {
         addLog('تم الدخول بنجاح إلى السيرفر!');
         entry.status = 'Online';
+        if (afkInterval) clearInterval(afkInterval);
+        try { await bot.waitForChunksToLoad(); } catch (e) {}
+        await new Promise((r) => setTimeout(r, 3000));
+        if (entry.instance !== bot) return;
         if (afkInterval) clearInterval(afkInterval);
         afkInterval = setInterval(() => {
             if (!bot.entity) return;
             try {
                 bot.setControlState('sneak', true);
                 setTimeout(() => { try { bot.setControlState('sneak', false); } catch (e) {} }, 1000);
-                bot.setControlState('jump', true);
-                setTimeout(() => { try { bot.setControlState('jump', false); } catch (e) {} }, 400);
+                if (!entry.safeMode && bot.entity.onGround) {
+                    bot.setControlState('jump', true);
+                    setTimeout(() => { try { bot.setControlState('jump', false); } catch (e) {} }, 400);
+                } else if (entry.safeMode) {
+                    bot.swingArm('right');
+                }
             } catch (e) {}
         }, 5000);
     });
@@ -181,6 +189,10 @@ function startBotProcess(botData) {
     bot.on('kicked', (reason) => {
         let text = typeof reason === 'string' ? reason : JSON.stringify(reason);
         addLog(`تم الطرد: ${text}`);
+        if (text.indexOf('invalid_player_movement') !== -1 && !entry.safeMode) {
+            entry.safeMode = true;
+            addLog('تم تفعيل الوضع الآمن: بدون قفز، انحناء وتحريك اليد فقط.');
+        }
     });
 
     bot.on('error', (err) => addLog(`خطأ: ${err.message}`));
