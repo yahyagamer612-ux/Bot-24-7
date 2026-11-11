@@ -151,6 +151,8 @@ function startBotProcess(botData) {
         return;
     }
     entry.instance = bot;
+    // إيقاف الفيزياء عند الدخول لتفادي الطرد بسبب حركة غير صالحة (مع إضافات Via)
+    bot.physicsEnabled = false;
 
     let afkInterval = null;
 
@@ -160,20 +162,28 @@ function startBotProcess(botData) {
         addLog('تم الدخول بنجاح إلى السيرفر!');
         entry.status = 'Online';
         if (afkInterval) clearInterval(afkInterval);
-        try { await bot.waitForChunksToLoad(); } catch (e) {}
+        try {
+            await Promise.race([
+                bot.waitForChunksToLoad(),
+                new Promise((r) => setTimeout(r, 10000))
+            ]);
+        } catch (e) {}
         await new Promise((r) => setTimeout(r, 3000));
         if (entry.instance !== bot) return;
+        if (!entry.safeMode) bot.physicsEnabled = true;
         if (afkInterval) clearInterval(afkInterval);
         afkInterval = setInterval(() => {
             if (!bot.entity) return;
             try {
-                bot.setControlState('sneak', true);
-                setTimeout(() => { try { bot.setControlState('sneak', false); } catch (e) {} }, 1000);
-                if (!entry.safeMode && bot.entity.onGround) {
-                    bot.setControlState('jump', true);
-                    setTimeout(() => { try { bot.setControlState('jump', false); } catch (e) {} }, 400);
-                } else if (entry.safeMode) {
+                if (entry.safeMode) {
                     bot.swingArm('right');
+                } else {
+                    bot.setControlState('sneak', true);
+                    setTimeout(() => { try { bot.setControlState('sneak', false); } catch (e) {} }, 1000);
+                    if (bot.entity.onGround) {
+                        bot.setControlState('jump', true);
+                        setTimeout(() => { try { bot.setControlState('jump', false); } catch (e) {} }, 400);
+                    }
                 }
             } catch (e) {}
         }, 5000);
@@ -191,7 +201,7 @@ function startBotProcess(botData) {
         addLog(`تم الطرد: ${text}`);
         if (text.indexOf('invalid_player_movement') !== -1 && !entry.safeMode) {
             entry.safeMode = true;
-            addLog('تم تفعيل الوضع الآمن: بدون قفز، انحناء وتحريك اليد فقط.');
+            addLog('تم تفعيل الوضع الآمن: بدون حركة، تحريك اليد فقط.');
         }
     });
 
