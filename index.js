@@ -57,10 +57,12 @@ db.serialize(() => {
         ip TEXT,
         port INTEGER,
         status TEXT DEFAULT 'Offline',
-        autostart INTEGER DEFAULT 1
+        autostart INTEGER DEFAULT 1,
+        is_registered INTEGER DEFAULT 0
     )`);
 
     db.run(`ALTER TABLE bots ADD COLUMN autostart INTEGER DEFAULT 1`, () => {});
+    db.run(`ALTER TABLE bots ADD COLUMN is_registered INTEGER DEFAULT 0`, () => {});
 
     const ownerHash = bcrypt.hashSync(OWNER_PASSWORD, 10);
     const adminHash = bcrypt.hashSync(ADMIN_PASSWORD, 10);
@@ -118,7 +120,7 @@ function startBotProcess(botData) {
     const existing = activeBots[key];
     if (existing && (existing.instance || existing.reconnectTimer)) return;
 
-    const entry = existing || { logs: [], health: 0, food: 0, safeMode: process.env.BOT_JUMP === 'false' };
+    const entry = existing || { logs: [], health: 0, food: 0, safeMode: true };
     entry.manualStop = false;
     entry.status = 'Connecting';
     entry.info = botData;
@@ -133,7 +135,8 @@ function startBotProcess(botData) {
 
     const host = String(botData.ip).trim();
     const port = parseInt(botData.port) || 25565;
-    addLog(`جاري الاتصال بـ ${host}:${port} باسم ${botData.bot_name}...`);
+    const botVersion = process.env.BOT_VERSION || '1.19.4';
+    addLog(`جاري الاتصال بـ ${host}:${port} باسم ${botData.bot_name} (إصدار ${botVersion})...`);
 
     let bot;
     try {
@@ -142,8 +145,9 @@ function startBotProcess(botData) {
             port: port,
             username: botData.bot_name,
             auth: 'offline',
-            version: process.env.BOT_VERSION || false,
-            hideErrors: true
+            version: botVersion,
+            hideErrors: true,
+            physicsEnabled: false
         });
     } catch (e) {
         addLog(`فشل إنشاء البوت: ${e.message}`);
@@ -151,7 +155,6 @@ function startBotProcess(botData) {
         return;
     }
     entry.instance = bot;
-    // إيقاف الفيزياء عند الدخول لتفادي الطرد بسبب حركة غير صالحة (مع إضافات Via)
     bot.physicsEnabled = false;
 
     let afkInterval = null;
@@ -162,31 +165,30 @@ function startBotProcess(botData) {
         addLog('تم الدخول بنجاح إلى السيرفر!');
         entry.status = 'Online';
         if (afkInterval) clearInterval(afkInterval);
-        try {
-            await Promise.race([
-                bot.waitForChunksToLoad(),
-                new Promise((r) => setTimeout(r, 10000))
-            ]);
-        } catch (e) {}
-        await new Promise((r) => setTimeout(r, 3000));
-        if (entry.instance !== bot) return;
-        if (!entry.safeMode) bot.physicsEnabled = true;
-        if (afkInterval) clearInterval(afkInterval);
+
+        bot.physicsEnabled = false;
+
+        // التحقق التلقائي: إذا لم يتم التسجيل من قبل، يرسل register، وإلا يرسل login
+        setTimeout(() => {
+            if (entry.instance !== bot) return;
+            if (!botData.is_registered) {
+                addLog('تسجيل حساب جديد تلقائياً (/register)...');
+                bot.chat('/register 222222 222222');
+                db.run(`UPDATE bots SET is_registered = 1 WHERE id = ?`, [botData.id]);
+                botData.is_registered = 1;
+            } else {
+                addLog('تسجيل الدخول تلقائياً (/login)...');
+                bot.chat('/login 222222');
+            }
+        }, 2000);
+
         afkInterval = setInterval(() => {
             if (!bot.entity) return;
             try {
-                if (entry.safeMode) {
-                    bot.swingArm('right');
-                } else {
-                    bot.setControlState('sneak', true);
-                    setTimeout(() => { try { bot.setControlState('sneak', false); } catch (e) {} }, 1000);
-                    if (bot.entity.onGround) {
-                        bot.setControlState('jump', true);
-                        setTimeout(() => { try { bot.setControlState('jump', false); } catch (e) {} }, 400);
-                    }
-                }
+                bot.swingArm('right');
+                bot.look(Math.random() * Math.PI * 2, 0, true);
             } catch (e) {}
-        }, 5000);
+        }, 8000);
     });
 
     bot.on('health', () => {
@@ -199,10 +201,6 @@ function startBotProcess(botData) {
     bot.on('kicked', (reason) => {
         let text = typeof reason === 'string' ? reason : JSON.stringify(reason);
         addLog(`تم الطرد: ${text}`);
-        if (text.indexOf('invalid_player_movement') !== -1 && !entry.safeMode) {
-            entry.safeMode = true;
-            addLog('تم تفعيل الوضع الآمن: بدون حركة، تحريك اليد فقط.');
-        }
     });
 
     bot.on('error', (err) => addLog(`خطأ: ${err.message}`));
@@ -354,10 +352,10 @@ app.post('/api/bots/create', (req, res) => {
             if (!/^[A-Za-z0-9.\-_]{1,253}$/.test(host)) return res.status(400).json({ error: 'عنوان السيرفر غير صالح' });
             if (portNum < 1 || portNum > 65535) return res.status(400).json({ error: 'المنفذ غير صالح' });
 
-            db.run(`INSERT INTO bots (user_id, bot_name, ip, port, autostart) VALUES (?, ?, ?, ?, 1)`,
+            db.run(`INSERT INTO bots (user_id, bot_name, ip, port, autostart, is_registered) VALUES (?, ?, ?, ?, 1, 0)`,
                 [user.id, botName, host, portNum], function (err) {
                     if (err) return res.status(500).json({ error: 'تعذر إنشاء البوت' });
-                    const newBot = { id: this.lastID, user_id: user.id, bot_name: botName, ip: host, port: portNum };
+                    const newBot = { id: this.lastID, user_id: user.id, bot_name: botName, ip: host, port: portNum, is_registered: 0 };
                     startBotProcess(newBot);
                     res.json({ success: true });
                 });
@@ -525,6 +523,8 @@ const PAGE_HTML = `<!DOCTYPE html>
         .btn-youtube:hover { background: #CC0000; }
         .btn-danger { background: #ef4444; color: #fff; }
         .btn-gray { background: #475569; color: #fff; }
+        .btn-blue { background: #3b82f6; color: #fff; }
+        .btn-blue:hover { background: #2563eb; }
         .bot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
         .bot-card {
             background: rgba(15, 23, 42, 0.95); border-radius: 12px; padding: 20px; border: 1px solid rgba(168, 85, 247, 0.4);
@@ -894,7 +894,8 @@ const PAGE_HTML = `<!DOCTYPE html>
                         '<input type="text" id="cmd-' + bot.id + '" placeholder="اكتب شات/أمر هنا..." maxlength="256" style="padding:6px; font-size:0.8rem;">' +
                         '<button data-act="send" data-id="' + bot.id + '" class="btn btn-purple" style="width:auto; padding:6px 12px;">إرسال</button>' +
                     '</div>' +
-                    '<button data-act="' + (stopped ? 'start' : 'stop') + '" data-id="' + bot.id + '" class="btn ' + (stopped ? 'btn-purple' : 'btn-danger') + '" style="margin-top:10px;">' +
+                    '<button data-act="login" data-id="' + bot.id + '" class="btn btn-blue" style="margin-top:8px;">🔐 تسجيل دخول (/login 222222)</button>' +
+                    '<button data-act="' + (stopped ? 'start' : 'stop') + '" data-id="' + bot.id + '" class="btn ' + (stopped ? 'btn-purple' : 'btn-danger') + '" style="margin-top:8px;">' +
                         (stopped ? 'تشغيل' : 'إيقاف البوت') + '</button>' +
                     '<button data-act="delete" data-id="' + bot.id + '" class="btn btn-gray" style="margin-top:8px;">🗑️ حذف البوت</button>' +
                 '</div>';
@@ -916,6 +917,7 @@ const PAGE_HTML = `<!DOCTYPE html>
             var id = parseInt(btn.getAttribute('data-id'));
             var act = btn.getAttribute('data-act');
             if (act === 'send') sendCommand(id);
+            else if (act === 'login') sendLoginCommand(id);
             else if (act === 'start' || act === 'stop') toggleBot(id, act);
             else if (act === 'delete') deleteBot(id);
         });
@@ -935,6 +937,13 @@ const PAGE_HTML = `<!DOCTYPE html>
             if (!res.ok) alert(data.error);
             input.value = '';
             input.blur();
+            loadBots();
+        }
+
+        async function sendLoginCommand(botId) {
+            var res = await post('/api/bots/command', { botId: botId, command: '/login 222222' });
+            var data = await res.json();
+            if (!res.ok) alert(data.error);
             loadBots();
         }
 
